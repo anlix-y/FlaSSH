@@ -29,6 +29,19 @@ pub enum Commands {
         #[command(subcommand)]
         command: GroupCommands,
     },
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommands {
+    Set {
+        key: String,
+        value: String,
+    },
+    Show,
 }
 
 #[derive(Subcommand)]

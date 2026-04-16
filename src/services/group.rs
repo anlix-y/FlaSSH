@@ -53,10 +53,10 @@ pub async fn run_stream(group_name: String, command: String) {
     let groups = storage::group::load();
     let servers = storage::server::load();
 
-    let group = match groups.iter().find(|g| g.name == group_name) {
-        Some(g) => g,
-        None => {
-            println!("Group '{}' not found", group_name);
+    let group = match find_group(&group_name, &groups) {
+        Ok(g) => g,
+        Err(e) => {
+            println!("{}", e);
             return;
         }
     };
@@ -64,11 +64,16 @@ pub async fn run_stream(group_name: String, command: String) {
     let (tx, rx) = mpsc::channel();
     let mut rng = rand::thread_rng();
 
+    let mut shuffled_colors: Vec<String> = COLORS.iter().map(|s| s.to_string()).collect();
+    shuffled_colors.shuffle(&mut rng);
+    let mut color_idx = 0;
+
     for server_name in &group.servers {
         if let Some(server) = servers.iter().find(|s| &s.name == server_name).cloned() {
             let tx = tx.clone();
             let cmd = command.clone();
-            let color = COLORS.choose(&mut rng).unwrap_or(&"cyan").to_string();
+            let color = shuffled_colors[color_idx % shuffled_colors.len()].clone();
+            color_idx += 1;
 
             tokio::spawn(async move {
                 let (name, output) = run_with_retry(server, cmd).await;
@@ -111,14 +116,20 @@ pub async fn run_with_retry(server: Server, cmd: String) -> (String, String) {
     (name, "Failed after retries\n".to_string())
 }
 
+fn find_group<'a>(group_name: &str, groups: &'a [Group]) -> Result<&'a Group, String> {
+    groups.iter()
+        .find(|g| g.name == group_name)
+        .ok_or_else(|| format!("Group '{}' not found", group_name))
+}
+
 pub fn interactive(group_name: String) {
     let groups = storage::group::load();
     let servers = storage::server::load();
 
-    let group = match groups.iter().find(|g| g.name == group_name) {
-        Some(g) => g,
-        None => {
-            println!("Group '{}' not found", group_name);
+    let group = match find_group(&group_name, &groups) {
+        Ok(g) => g,
+        Err(e) => {
+            println!("{}", e);
             return;
         }
     };
@@ -131,12 +142,17 @@ pub fn interactive(group_name: String) {
     use termion::raw::IntoRawMode;
     let _stdout = std::io::stdout().into_raw_mode().unwrap();
 
+    let mut shuffled_colors: Vec<String> = COLORS.iter().map(|s| s.to_string()).collect();
+    shuffled_colors.shuffle(&mut rng);
+    let mut color_idx = 0;
+
     for server_name in &group.servers {
         if let Some(server) = servers.iter().find(|s| &s.name == server_name).cloned() {
             let (tx, rx) = mpsc::channel();
             input_txs.push(tx);
             let output_tx = output_tx.clone();
-            let color = COLORS.choose(&mut rng).unwrap_or(&"cyan").to_string();
+            let color = shuffled_colors[color_idx % shuffled_colors.len()].clone();
+            color_idx += 1;
 
             thread::spawn(move || {
                 crate::ssh::interactive_multi_worker(server, rx, output_tx, color);
@@ -157,7 +173,7 @@ pub fn interactive(group_name: String) {
     let current_line_for_main = current_line_shared.clone();
 
     thread::spawn(move || {
-        use std::io::{Read, Write};
+        use std::io::{Read};
         let mut buffer = [0u8; 1024];
         loop {
             match std::io::stdin().read(&mut buffer) {
@@ -178,15 +194,17 @@ pub fn interactive(group_name: String) {
                             }
                             let _ = input_print_tx.send(("\n".to_string(), line.clone()));
                             line.clear();
-                        } else if c == '¡' || c == '⁄' || c == '€' || c == '‹' || c == '›' || c == 'ﬁ' || c == 'ﬂ' || c == '‡' || c == '·' {
-                            // MacOS Option + 1-9 characters
+                        } else if c == '¡' || c == '⁄' || c == '€' || c == '‹' || c == '›' || c == 'ﬁ' || c == 'ﬂ' || c == '‡' || c == '·' || c == '\t' {
                             let digit = match c {
                                 '¡' => 1, '⁄' => 2, '€' => 3, '‹' => 4, '›' => 5,
                                 'ﬁ' => 6, 'ﬂ' => 7, '‡' => 8, '·' => 9,
+                                '\t' => -1,
                                 _ => 0
                             };
                             if digit > 0 {
                                 let _ = input_print_tx.send(("alt_digit".to_string(), digit.to_string()));
+                            } else if digit == -1 {
+                                let _ = input_print_tx.send(("alt_tab".to_string(), String::new()));
                             }
                             continue;
                         } else if c == 'ß' {
@@ -194,8 +212,7 @@ pub fn interactive(group_name: String) {
                             let _ = input_print_tx.send(("alt_s".to_string(), String::new()));
                             continue;
                         } else if c == '\x1b' {
-                            // Small delay to allow subsequent bytes to arrive
-                            std::thread::sleep(std::time::Duration::from_millis(20));
+                            thread::sleep(Duration::from_millis(20));
 
                             let mut next_byte = [0u8; 1];
                             if std::io::stdin().read(&mut next_byte).is_ok() {
@@ -203,7 +220,7 @@ pub fn interactive(group_name: String) {
                                 if b == b'\t' {
                                     let _ = input_print_tx.send(("alt_tab".to_string(), String::new()));
                                     continue;
-                                } else if b >= b'1' && b <= b'9' {
+                                } else if (b'1'..=b'9').contains(&b) {
                                     let digit = (b - b'0') as usize;
                                     let _ = input_print_tx.send(("alt_digit".to_string(), digit.to_string()));
                                     continue;
@@ -295,7 +312,7 @@ pub fn interactive(group_name: String) {
                     None
                 };
 
-                let mut sorted_names: Vec<_> = if cur_focus == 0 {
+                let sorted_names: Vec<_> = if cur_focus == 0 {
                     group.servers.clone()
                 } else {
                     vec![server_names[cur_focus - 1].clone()]
@@ -313,11 +330,8 @@ pub fn interactive(group_name: String) {
                     let mut received_any = false;
                     
                     loop {
-                        // Check for new input while waiting for output (e.g. Ctrl+C)
-                        if let Ok((itype, _)) = input_print_rx.try_recv() {
-                            if itype == "\x03" {
-                                // Ctrl+C handled
-                            }
+                        if let Ok(("\x03", _)) = input_print_rx.try_recv().as_ref().map(|(it, line)| (it.as_str(), line.as_str())) {
+                            // Ctrl+C handled
                         }
 
                         // Check for new output
@@ -351,7 +365,7 @@ pub fn interactive(group_name: String) {
                             }
 
                             if let Some((buffer, _)) = buffers.get_mut(&s_name) {
-                                let server_output = buffer.drain(..).collect::<String>();
+                                let server_output = std::mem::take(buffer);
                                 let lines: Vec<&str> = server_output.split("\r\n").collect();
                                 for (i, line) in lines.iter().enumerate() {
                                     if i == lines.len() - 1 && line.is_empty() {

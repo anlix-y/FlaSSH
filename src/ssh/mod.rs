@@ -86,51 +86,51 @@ pub fn interactive(server: &Server, color: &str) {
 
     sess.set_blocking(false);
 
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            let mut buffer = [0u8; 4096];
-            loop {
-                match channel_out.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let _ = stdout.write_all(&buffer[..n]);
-                        let _ = stdout.flush();
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(_) => break,
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        loop {
+            match channel_out.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let _ = stdout.write_all(&buffer[..n]);
+                    let _ = stdout.flush();
                 }
-            }
-        });
-
-        s.spawn(|| {
-            let mut stdin = std::io::stdin();
-            let mut buffer = [0u8; 1024];
-            loop {
-                match stdin.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let mut sent = 0;
-                        while sent < n {
-                            match channel_in.write(&buffer[sent..n]) {
-                                Ok(0) => break,
-                                Ok(written) => {
-                                    sent += written;
-                                    let _ = channel_in.flush();
-                                }
-                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                    }
-                    Err(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
+                Err(_) => break,
             }
-        });
+        }
+        // When output stops, we should probably exit or signal it.
+        // For a simple CLI, we can just exit the process if it's the only thing running.
+        // But better to return from the function.
+        std::process::exit(0);
     });
+
+    let mut stdin = std::io::stdin();
+    let mut buffer = [0u8; 1024];
+    loop {
+        match stdin.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                let mut sent = 0;
+                while sent < n {
+                    match channel_in.write(&buffer[sent..n]) {
+                        Ok(0) => break,
+                        Ok(written) => {
+                            sent += written;
+                            let _ = channel_in.flush();
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
 
     sess.set_blocking(true);
     let _ = channel.wait_close();
